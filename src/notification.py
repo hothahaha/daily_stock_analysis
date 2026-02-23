@@ -2081,6 +2081,22 @@ class NotificationService:
         if message_thread_id:
             payload['message_thread_id'] = message_thread_id
 
+        def _try_plain_text_fallback() -> bool:
+            plain_payload = dict(payload)
+            plain_payload.pop('parse_mode', None)
+            plain_payload['text'] = text
+            try:
+                fallback_resp = requests.post(api_url, json=plain_payload, timeout=10)
+                if fallback_resp.status_code == 200 and fallback_resp.json().get('ok'):
+                    logger.info("Telegram 消息发送成功（纯文本）")
+                    return True
+                logger.error(f"Telegram 纯文本重试失败: HTTP {fallback_resp.status_code}")
+                logger.error(f"响应内容: {fallback_resp.text}")
+                return False
+            except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as e:
+                logger.error(f"Telegram 纯文本重试异常: {e}")
+                return False
+
         max_retries = 3
         for attempt in range(1, max_retries + 1):
             try:
@@ -2108,19 +2124,24 @@ class NotificationService:
                     # If Markdown parsing failed, fall back to plain text
                     if 'parse' in error_desc.lower() or 'markdown' in error_desc.lower():
                         logger.info("尝试使用纯文本格式重新发送...")
-                        plain_payload = dict(payload)
-                        plain_payload.pop('parse_mode', None)
-                        plain_payload['text'] = text  # Use original text
-                        
-                        try:
-                            response = requests.post(api_url, json=plain_payload, timeout=10)
-                            if response.status_code == 200 and response.json().get('ok'):
-                                logger.info("Telegram 消息发送成功（纯文本）")
-                                return True
-                        except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as e:
-                            logger.error(f"Telegram plain-text fallback failed: {e}")
+                        return _try_plain_text_fallback()
                     
                     return False
+            elif response.status_code == 400:
+                error_desc = ''
+                try:
+                    error_desc = (response.json().get('description') or '').strip()
+                except Exception:
+                    error_desc = response.text[:200]
+
+                logger.error(f"Telegram 请求失败: HTTP 400, {error_desc}")
+
+                # Telegram markdown parse errors usually return HTTP 400.
+                if 'parse' in error_desc.lower() or 'markdown' in error_desc.lower() or 'entities' in error_desc.lower():
+                    logger.info("检测到 Telegram Markdown 解析错误，尝试纯文本重试...")
+                    return _try_plain_text_fallback()
+
+                return False
             elif response.status_code == 429:
                 # Rate limited — respect Retry-After header
                 retry_after = int(response.headers.get('Retry-After', 2 ** attempt))
