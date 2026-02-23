@@ -626,6 +626,30 @@ class NotificationService:
                 return value[len(prefix):]
         return value
 
+    @staticmethod
+    def _is_placeholder_conclusion(text: Any) -> bool:
+        """判断是否为无信息的一句话结论。"""
+        if not isinstance(text, str):
+            return True
+        normalized = text.strip()
+        if not normalized:
+            return True
+        return normalized in {"分析完成", "无分析结果", "暂无", "N/A", "-", "--"}
+
+    def _build_fallback_conclusion(self, result: AnalysisResult) -> str:
+        """基于已有结构化结果生成保底的一句话决策。"""
+        stock_name = result.name or result.code
+        advice = result.operation_advice or "持有"
+        trend = result.trend_prediction or "震荡"
+
+        if advice in {"买入", "加仓", "强烈买入"}:
+            return f"{stock_name}维持{trend}，建议分批{advice}并控制仓位。"
+        if advice in {"减仓", "卖出", "强烈卖出"}:
+            return f"{stock_name}当前{trend}偏弱，建议{advice}并优先风控。"
+        if advice == "观望":
+            return f"{stock_name}处于{trend}阶段，暂时观望等待明确信号。"
+        return f"{stock_name}当前{trend}，建议继续{advice}并跟踪关键位。"
+
     def _get_signal_level(self, result: AnalysisResult) -> tuple:
         """
         Get signal level and color based on operation advice.
@@ -775,6 +799,8 @@ class NotificationService:
                 # ========== 核心结论 ==========
                 core = dashboard.get('core_conclusion', {}) if dashboard else {}
                 one_sentence = core.get('one_sentence', result.analysis_summary)
+                if self._is_placeholder_conclusion(one_sentence):
+                    one_sentence = self._build_fallback_conclusion(result)
                 time_sense = core.get('time_sensitivity', '本周内')
                 pos_advice = core.get('position_advice', {})
                 

@@ -1481,6 +1481,107 @@ class GeminiAnalyzer:
 
         return snapshot
 
+    @staticmethod
+    def _is_placeholder_text(text: Any) -> bool:
+        """判断是否为无信息占位文本。"""
+        if not isinstance(text, str):
+            return True
+        normalized = text.strip()
+        if not normalized:
+            return True
+        placeholders = {
+            "分析完成",
+            "无分析结果",
+            "暂无",
+            "N/A",
+            "NA",
+            "-",
+            "--",
+            "待补充",
+        }
+        return normalized in placeholders
+
+    @staticmethod
+    def _build_fallback_one_sentence(stock_name: str, advice: str, trend: str) -> str:
+        """当模型未返回核心结论时，生成可执行的一句话决策。"""
+        name = stock_name or "该标的"
+        advice = advice or "持有"
+        trend = trend or "震荡"
+
+        if advice in {"买入", "加仓", "强烈买入"}:
+            return f"{name}维持{trend}，建议分批{advice}，回踩支撑优先。"
+        if advice in {"减仓", "卖出", "强烈卖出"}:
+            return f"{name}当前{trend}偏弱，建议{advice}并严格控制风险。"
+        if advice == "观望":
+            return f"{name}处于{trend}阶段，暂时观望，等待明确突破信号。"
+        return f"{name}当前{trend}，建议继续{advice}，关注关键位再决策。"
+
+    @staticmethod
+    def _infer_time_sensitivity(advice: str) -> str:
+        """基于操作建议推断时效性。"""
+        if advice in {"买入", "卖出", "强烈买入", "强烈卖出"}:
+            return "今日内"
+        if advice in {"加仓", "减仓"}:
+            return "本周内"
+        return "本周内"
+
+    def _normalize_dashboard(
+        self,
+        dashboard: Any,
+        stock_name: str,
+        operation_advice: str,
+        trend_prediction: str,
+        analysis_summary: str,
+    ) -> Dict[str, Any]:
+        """
+        兜底补全 dashboard 核心字段，避免“分析完成”这类无效结论进入通知。
+        """
+        normalized_dashboard: Dict[str, Any] = dashboard if isinstance(dashboard, dict) else {}
+        core = normalized_dashboard.get("core_conclusion")
+        if not isinstance(core, dict):
+            core = {}
+
+        one_sentence = core.get("one_sentence", "")
+        if self._is_placeholder_text(one_sentence):
+            one_sentence = self._build_fallback_one_sentence(
+                stock_name=stock_name,
+                advice=operation_advice,
+                trend=trend_prediction,
+            )
+        core["one_sentence"] = one_sentence
+
+        if self._is_placeholder_text(core.get("time_sensitivity")):
+            core["time_sensitivity"] = self._infer_time_sensitivity(operation_advice)
+
+        position_advice = core.get("position_advice")
+        if not isinstance(position_advice, dict):
+            position_advice = {}
+
+        if self._is_placeholder_text(position_advice.get("no_position")):
+            if operation_advice in {"买入", "加仓", "强烈买入"}:
+                position_advice["no_position"] = "可小仓分批介入，优先回踩支撑后执行。"
+            elif operation_advice in {"减仓", "卖出", "强烈卖出"}:
+                position_advice["no_position"] = "暂不新开仓，等待风险释放后再评估。"
+            else:
+                position_advice["no_position"] = "先观察关键位突破，再决定是否入场。"
+
+        if self._is_placeholder_text(position_advice.get("has_position")):
+            if operation_advice in {"减仓", "卖出", "强烈卖出"}:
+                position_advice["has_position"] = "建议减仓并设置止损，防止回撤扩大。"
+            elif operation_advice in {"买入", "加仓", "强烈买入"}:
+                position_advice["has_position"] = "可分批加仓，但总仓位需受控。"
+            else:
+                position_advice["has_position"] = "继续持有并跟踪趋势变化。"
+
+        core["position_advice"] = position_advice
+        normalized_dashboard["core_conclusion"] = core
+
+        # 保障 analysis_summary 不再是占位文本
+        if self._is_placeholder_text(analysis_summary):
+            analysis_summary = one_sentence
+
+        return normalized_dashboard
+
     def _parse_response(
         self, 
         response_text: str, 
@@ -1513,8 +1614,25 @@ class GeminiAnalyzer:
                 
                 data = json.loads(json_str)
                 
-                # 提取 dashboard 数据
-                dashboard = data.get('dashboard', None)
+                # 提取核心字段，避免默认占位文本进入通知
+                operation_advice = data.get('operation_advice', '持有')
+                trend_prediction = data.get('trend_prediction', '震荡')
+                analysis_summary = data.get('analysis_summary', '')
+                if self._is_placeholder_text(analysis_summary):
+                    analysis_summary = self._build_fallback_one_sentence(
+                        stock_name=name,
+                        advice=operation_advice,
+                        trend=trend_prediction,
+                    )
+
+                # 提取并补全 dashboard 数据
+                dashboard = self._normalize_dashboard(
+                    dashboard=data.get('dashboard', None),
+                    stock_name=name,
+                    operation_advice=operation_advice,
+                    trend_prediction=trend_prediction,
+                    analysis_summary=analysis_summary,
+                )
 
                 # 优先使用 AI 返回的股票名称（如果原名称无效或包含代码）
                 ai_stock_name = data.get('stock_name')
@@ -1538,8 +1656,8 @@ class GeminiAnalyzer:
                     name=name,
                     # 核心指标
                     sentiment_score=int(data.get('sentiment_score', 50)),
-                    trend_prediction=data.get('trend_prediction', '震荡'),
-                    operation_advice=data.get('operation_advice', '持有'),
+                    trend_prediction=trend_prediction,
+                    operation_advice=operation_advice,
                     decision_type=decision_type,
                     confidence_level=data.get('confidence_level', '中'),
                     # 决策仪表盘
@@ -1562,7 +1680,7 @@ class GeminiAnalyzer:
                     market_sentiment=data.get('market_sentiment', ''),
                     hot_topics=data.get('hot_topics', ''),
                     # 综合
-                    analysis_summary=data.get('analysis_summary', '分析完成'),
+                    analysis_summary=analysis_summary,
                     key_points=data.get('key_points', ''),
                     risk_warning=data.get('risk_warning', ''),
                     buy_reason=data.get('buy_reason', ''),
