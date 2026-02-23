@@ -1022,6 +1022,8 @@ class NotificationService:
                 
                 # 核心决策（一句话）
                 one_sentence = core.get('one_sentence', result.analysis_summary) if core else result.analysis_summary
+                if self._is_placeholder_conclusion(one_sentence):
+                    one_sentence = self._build_fallback_conclusion(result)
                 if one_sentence:
                     lines.append(f"📌 **{one_sentence[:80]}**")
                     lines.append("")
@@ -1205,6 +1207,8 @@ class NotificationService:
         
         # 核心决策（一句话）
         one_sentence = core.get('one_sentence', result.analysis_summary) if core else result.analysis_summary
+        if self._is_placeholder_conclusion(one_sentence):
+            one_sentence = self._build_fallback_conclusion(result)
         if one_sentence:
             lines.extend([
                 "### 📌 核心结论",
