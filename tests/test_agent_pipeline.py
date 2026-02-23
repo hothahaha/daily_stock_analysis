@@ -13,11 +13,17 @@ import json
 import unittest
 import sys
 import os
+from pathlib import Path
 from unittest.mock import MagicMock, patch, PropertyMock
 from dataclasses import dataclass, field
 from typing import List, Optional, Dict, Any
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
+
+def _builtin_strategy_names() -> set[str]:
+    strategies_dir = Path(__file__).resolve().parent.parent / "strategies"
+    return {path.stem for path in strategies_dir.glob("*.yaml")}
 
 
 # ============================================================
@@ -204,23 +210,18 @@ class TestPipelineSkillRegistration(unittest.TestCase):
     """Test built-in strategies load from YAML via SkillManager."""
 
     def test_load_builtin_strategies(self):
-        """SkillManager.load_builtin_strategies() should load all 11 YAML strategies."""
+        """SkillManager.load_builtin_strategies() should load all YAML strategies."""
         from src.agent.skills.base import SkillManager
 
         skill_manager = SkillManager()
+        expected = _builtin_strategy_names()
         count = skill_manager.load_builtin_strategies()
-        self.assertEqual(count, 11)
+        self.assertEqual(count, len(expected))
 
         skills = skill_manager.list_skills()
-        self.assertEqual(len(skills), 11)
+        self.assertEqual(len(skills), len(expected))
 
         names = {s.name for s in skills}
-        expected = {
-            "dragon_head", "one_yang_three_yin", "shrink_pullback",
-            "volume_breakout", "bottom_volume", "ma_golden_cross",
-            "bull_trend", "box_oscillation", "chan_theory",
-            "emotion_cycle", "wave_theory",
-        }
         self.assertEqual(names, expected)
 
         # All should be disabled by default
@@ -556,14 +557,15 @@ class TestSkillActivation(unittest.TestCase):
         from src.agent.skills.base import SkillManager
 
         skill_manager = SkillManager()
+        expected = _builtin_strategy_names()
         count = skill_manager.load_builtin_strategies()
-        self.assertEqual(count, 11, "Should load 11 built-in strategies from YAML")
+        self.assertEqual(count, len(expected), "Should load all built-in strategies from YAML")
 
         # Simulate pipeline logic: empty config -> activate all
         skill_manager.activate(["all"])
 
         active = skill_manager.list_active_skills()
-        self.assertEqual(len(active), 11)
+        self.assertEqual(len(active), len(expected))
 
     def test_sentiment_score_parsed_from_dashboard(self):
         """Verify _agent_result_to_analysis_result handles non-numeric sentiment_score."""

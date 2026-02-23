@@ -13,6 +13,7 @@ Covers:
 import unittest
 import sys
 import os
+from pathlib import Path
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
@@ -23,6 +24,11 @@ from src.agent.tools.registry import (
     _infer_parameters,
 )
 from src.agent.skills.base import Skill, SkillManager
+
+
+def _builtin_strategy_names() -> set[str]:
+    strategies_dir = Path(__file__).resolve().parent.parent / "strategies"
+    return {path.stem for path in strategies_dir.glob("*.yaml")}
 
 
 # ============================================================
@@ -364,8 +370,9 @@ class TestBuiltinSkills(unittest.TestCase):
         from src.agent.skills.base import SkillManager
 
         manager = SkillManager()
+        expected = _builtin_strategy_names()
         count = manager.load_builtin_strategies()
-        self.assertEqual(count, 11, "Should load 11 built-in strategies from YAML")
+        self.assertEqual(count, len(expected), "Should load all built-in strategies from YAML")
 
         skills = manager.list_skills()
         names = set()
@@ -379,11 +386,9 @@ class TestBuiltinSkills(unittest.TestCase):
             names.add(skill.name)
 
         # All names should be unique
-        self.assertEqual(len(names), 6)
+        self.assertEqual(len(names), len(expected))
 
-        # Verify expected strategy names exist
-        expected = {"dragon_head", "volume_breakout", "shrink_pullback",
-                    "bottom_volume", "one_yang_three_yin", "ma_golden_cross"}
+        # Verify all strategy names from YAML are loaded
         self.assertEqual(names, expected)
 
 
