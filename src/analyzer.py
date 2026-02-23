@@ -827,6 +827,69 @@ class GeminiAnalyzer:
                 kwargs[mode_value] = max_output_tokens
             return kwargs
 
+        def _extract_response_text(response_obj) -> str:
+            """
+            兼容不同 OpenAI 兼容网关的响应结构，尽量提取可用文本。
+            """
+            if response_obj is None:
+                return ""
+
+            # 某些第三方网关可能直接返回纯文本
+            if isinstance(response_obj, str):
+                return response_obj.strip()
+
+            # 某些网关可能返回原始 dict
+            if isinstance(response_obj, dict):
+                choices = response_obj.get("choices")
+                if isinstance(choices, list) and choices:
+                    first = choices[0]
+                    if isinstance(first, dict):
+                        message = first.get("message", {})
+                        content = message.get("content")
+                        if isinstance(content, str) and content.strip():
+                            return content.strip()
+                        if isinstance(content, list):
+                            parts = [
+                                part.get("text", "")
+                                for part in content
+                                if isinstance(part, dict) and part.get("text")
+                            ]
+                            if parts:
+                                return "\n".join(parts).strip()
+
+                text = response_obj.get("output_text") or response_obj.get("content")
+                if isinstance(text, str) and text.strip():
+                    return text.strip()
+                return ""
+
+            # OpenAI SDK 对象格式
+            try:
+                choices = getattr(response_obj, "choices", None)
+                if choices and len(choices) > 0:
+                    first = choices[0]
+                    message = getattr(first, "message", None)
+                    content = getattr(message, "content", None) if message is not None else None
+
+                    if isinstance(content, str) and content.strip():
+                        return content.strip()
+                    if isinstance(content, list):
+                        parts = []
+                        for part in content:
+                            text = getattr(part, "text", None)
+                            if isinstance(text, str) and text:
+                                parts.append(text)
+                            elif isinstance(part, dict) and part.get("text"):
+                                parts.append(part["text"])
+                        if parts:
+                            return "\n".join(parts).strip()
+            except Exception:
+                pass
+
+            output_text = getattr(response_obj, "output_text", None)
+            if isinstance(output_text, str) and output_text.strip():
+                return output_text.strip()
+            return ""
+
         for attempt in range(max_retries):
             try:
                 if attempt > 0:
@@ -850,10 +913,10 @@ class GeminiAnalyzer:
                     else:
                         raise
 
-                if response and response.choices and response.choices[0].message.content:
-                    return response.choices[0].message.content
-                else:
-                    raise ValueError("OpenAI API 返回空响应")
+                response_text = _extract_response_text(response)
+                if response_text:
+                    return response_text
+                raise ValueError(f"OpenAI API 返回空响应或不支持的格式: {type(response).__name__}")
                     
             except Exception as e:
                 error_str = str(e)
