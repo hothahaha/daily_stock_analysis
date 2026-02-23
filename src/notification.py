@@ -2170,38 +2170,70 @@ class NotificationService:
         """分段发送长 Telegram 消息"""
         # 按段落分割
         sections = content.split("\n---\n")
-        
-        current_chunk = []
-        current_length = 0
-        all_success = True
-        chunk_index = 1
-        
+
+        def _split_oversize_text(text: str, limit: int) -> list[str]:
+            """
+            将超长文本切分为不超过 limit 的子块，优先按行切分。
+            """
+            if len(text) <= limit:
+                return [text]
+
+            chunks: list[str] = []
+            current = ""
+
+            for line in text.splitlines(keepends=True):
+                # 单行本身就超长，做硬切片
+                if len(line) > limit:
+                    if current:
+                        chunks.append(current)
+                        current = ""
+                    for i in range(0, len(line), limit):
+                        chunks.append(line[i:i + limit])
+                    continue
+
+                if len(current) + len(line) > limit:
+                    if current:
+                        chunks.append(current)
+                    current = line
+                else:
+                    current += line
+
+            if current:
+                chunks.append(current)
+
+            return chunks if chunks else [text[:limit]]
+
+        # 先将段落整理为不超长的小段，再组合为最终消息块
+        normalized_sections: list[str] = []
         for section in sections:
-            section_length = len(section) + 5  # +5 for "\n---\n"
-            
-            if current_length + section_length > max_length:
-                # 发送当前块
-                if current_chunk:
-                    chunk_content = "\n---\n".join(current_chunk)
-                    logger.info(f"发送 Telegram 消息块 {chunk_index}...")
-                    if not self._send_telegram_message(api_url, chat_id, chunk_content, message_thread_id):
-                        all_success = False
-                    chunk_index += 1
-                
-                # 重置
-                current_chunk = [section]
-                current_length = section_length
+            if not section:
+                continue
+            normalized_sections.extend(_split_oversize_text(section, max_length))
+
+        final_chunks: list[str] = []
+        current_chunk = ""
+
+        for section in normalized_sections:
+            if not current_chunk:
+                current_chunk = section
+                continue
+
+            candidate = f"{current_chunk}\n---\n{section}"
+            if len(candidate) <= max_length:
+                current_chunk = candidate
             else:
-                current_chunk.append(section)
-                current_length += section_length
-        
-        # 发送最后一块
+                final_chunks.append(current_chunk)
+                current_chunk = section
+
         if current_chunk:
-            chunk_content = "\n---\n".join(current_chunk)
-            logger.info(f"发送 Telegram 消息块 {chunk_index}...")
+            final_chunks.append(current_chunk)
+
+        all_success = True
+        for index, chunk_content in enumerate(final_chunks, start=1):
+            logger.info(f"发送 Telegram 消息块 {index}...")
             if not self._send_telegram_message(api_url, chat_id, chunk_content, message_thread_id):
                 all_success = False
-                
+
         return all_success
 
     def _send_telegram_photo(self, image_bytes: bytes) -> bool:
