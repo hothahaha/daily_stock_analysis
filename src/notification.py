@@ -450,9 +450,10 @@ class NotificationService:
             f"| 🔴 建议减仓/卖出 | **{sell_count}** 只 |",
             f"| 📈 平均看多评分 | **{avg_score:.1f}** 分 |",
             "",
-            "---",
-            "",
         ])
+
+        # 空仓用户优先候选
+        self._append_no_position_section(report_lines, sorted_results)
         
         # Issue #262: summary_only 时仅输出摘要，跳过个股详情
         if self._report_summary_only:
@@ -693,6 +694,108 @@ class NotificationService:
             return ('卖出', '🔴', '卖出')
         else:
             return ('观望', '⚪', '观望')
+
+    def _select_no_position_candidates(
+        self,
+        results: List[AnalysisResult],
+        top_n: int = 3
+    ) -> tuple:
+        """
+        为空仓用户筛选候选标的。
+
+        Returns:
+            (候选列表, 是否包含明确买入/加仓信号)
+        """
+        if not results:
+            return ([], False)
+
+        advice_rank = {
+            '强烈买入': 6,
+            '买入': 5,
+            '加仓': 4,
+            '持有': 3,
+            '观望': 2,
+            '减仓': 1,
+            '卖出': 0,
+            '强烈卖出': -1,
+        }
+        trend_rank = {
+            '强烈看多': 4,
+            '看多': 3,
+            '震荡': 2,
+            '看空': 1,
+            '强烈看空': 0,
+        }
+
+        scored = []
+        for r in results:
+            dashboard = r.dashboard if isinstance(r.dashboard, dict) else {}
+            intel = dashboard.get('intelligence', {}) if isinstance(dashboard, dict) else {}
+            risk_alerts = intel.get('risk_alerts', []) if isinstance(intel, dict) else []
+            risk_count = len(risk_alerts) if isinstance(risk_alerts, list) else 0
+
+            a_rank = advice_rank.get(r.operation_advice, 2)
+            t_rank = trend_rank.get(r.trend_prediction, 2)
+            scored.append((a_rank, t_rank, r.sentiment_score, -risk_count, r))
+
+        scored.sort(reverse=True, key=lambda x: (x[0], x[1], x[2], x[3]))
+        ordered = [item[-1] for item in scored if item[-1].success]
+
+        actionable = [r for r in ordered if advice_rank.get(r.operation_advice, 2) >= 4]
+        if actionable:
+            return (actionable[:top_n], True)
+
+        watchlist = [r for r in ordered if advice_rank.get(r.operation_advice, 2) >= 3]
+        return (watchlist[:top_n], False)
+
+    def _append_no_position_section(self, report_lines: List[str], results: List[AnalysisResult]) -> None:
+        """在报告中追加空仓选股建议。"""
+        picks, has_actionable = self._select_no_position_candidates(results, top_n=3)
+
+        report_lines.extend([
+            "## 🆕 空仓选股建议（Top 3）",
+            "",
+        ])
+
+        if not picks:
+            report_lines.extend([
+                "> 今日暂无可用候选，建议继续观察市场。",
+                "",
+                "---",
+                "",
+            ])
+            return
+
+        report_lines.extend([
+            "| 排名 | 标的 | 当前建议 | 空仓者建议 | 评分 |",
+            "|------|------|---------|-----------|------|",
+        ])
+
+        for idx, item in enumerate(picks, start=1):
+            dashboard = item.dashboard if isinstance(item.dashboard, dict) else {}
+            core = dashboard.get('core_conclusion', {}) if isinstance(dashboard, dict) else {}
+            pos_advice = core.get('position_advice', {}) if isinstance(core, dict) else {}
+            no_position_advice = pos_advice.get('no_position', '') if isinstance(pos_advice, dict) else ''
+            if not no_position_advice:
+                no_position_advice = self._build_fallback_conclusion(item)
+
+            display_name = self._escape_md(item.name if item.name else item.code)
+            report_lines.append(
+                f"| {idx} | {display_name}({item.code}) | {item.operation_advice}/{item.trend_prediction} | "
+                f"{no_position_advice} | {item.sentiment_score} |"
+            )
+
+        if not has_actionable:
+            report_lines.extend([
+                "",
+                "> 说明：今日未出现明确“买入/加仓”信号，以上为优先观察名单。",
+            ])
+
+        report_lines.extend([
+            "",
+            "---",
+            "",
+        ])
     
     def generate_dashboard_report(
         self,
@@ -747,6 +850,9 @@ class NotificationService:
                 "---",
                 "",
             ])
+
+        # 空仓用户优先候选
+        self._append_no_position_section(report_lines, sorted_results)
 
         # 逐个股票的决策仪表盘（Issue #262: summary_only 时跳过详情）
         if not self._report_summary_only:
