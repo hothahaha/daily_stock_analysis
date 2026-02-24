@@ -46,6 +46,23 @@ _ETF_SH_PREFIXES = ('51', '52', '56', '58')
 _ETF_SZ_PREFIXES = ('15', '16', '18')
 _ETF_ALL_PREFIXES = _ETF_SH_PREFIXES + _ETF_SZ_PREFIXES
 
+# 仅当用户显式输入指数代码时，才映射到旧版接口的指数 symbol。
+# 规则：裸 6 位代码（如 000001）按个股处理，避免与上证指数混淆。
+_EXPLICIT_CN_INDEX_SYMBOL_MAP = {
+    "SH000001": "sh000001",
+    "SZ399001": "sz399001",
+    "SZ399006": "sz399006",
+    "SH000300": "sh000300",
+    "SH000688": "sh000688",
+    "SH000016": "sh000016",
+    "000001.SH": "sh000001",
+    "399001.SZ": "sz399001",
+    "399006.SZ": "sz399006",
+    "000300.SH": "sh000300",
+    "000688.SH": "sh000688",
+    "000016.SH": "sh000016",
+}
+
 
 def _is_etf_code(stock_code: str) -> bool:
     """
@@ -69,6 +86,40 @@ def _is_us_code(stock_code: str) -> bool:
     """
     code = stock_code.strip().upper()
     return bool(re.match(r'^[A-Z]{1,5}(\.[A-Z])?$', code))
+
+
+def _to_legacy_realtime_symbol(stock_code: str) -> str:
+    """
+    将输入代码转换为 tushare 旧版实时接口 symbol。
+
+    关键约束：
+    - 裸 6 位代码（如 000001）视为个股，不做指数隐式映射
+    - 仅在显式指数写法（sh000001 / 000001.SH）时映射为指数 symbol
+    """
+    raw = (stock_code or "").strip()
+    if not raw:
+        return raw
+
+    upper = raw.upper()
+    lower = raw.lower()
+
+    # 显式指数（前缀/后缀）优先识别
+    if upper in _EXPLICIT_CN_INDEX_SYMBOL_MAP:
+        return _EXPLICIT_CN_INDEX_SYMBOL_MAP[upper]
+    if lower in _EXPLICIT_CN_INDEX_SYMBOL_MAP.values():
+        return lower
+
+    # 普通前缀格式（SH600519 / SZ000001）按个股处理，剥离交易所前缀
+    if upper.startswith(("SH", "SZ")) and len(upper) == 8 and upper[2:].isdigit():
+        return upper[2:]
+
+    # 兼容后缀格式（600519.SH / 000001.SZ），默认按个股基础代码
+    if "." in raw:
+        base, _ = raw.rsplit(".", 1)
+        return base
+
+    # 保持原样（通常是 6 位个股代码）
+    return raw
 
 
 class TushareFetcher(BaseFetcher):
@@ -558,21 +609,8 @@ class TushareFetcher(BaseFetcher):
         try:
             import tushare as ts
 
-            # Tushare 旧版接口使用 6 位代码
-            code_6 = stock_code.split('.')[0] if '.' in stock_code else stock_code
-
-            # 特殊处理指数代码：旧版接口需要前缀 (sh000001, sz399001)
-            # 简单的指数判断逻辑
-            if code_6 == '000001':  # 上证指数
-                symbol = 'sh000001'
-            elif code_6 == '399001': # 深证成指
-                symbol = 'sz399001'
-            elif code_6 == '399006': # 创业板指
-                symbol = 'sz399006'
-            elif code_6 == '000300': # 沪深300
-                symbol = 'sh000300'
-            else:
-                symbol = code_6
+            # 仅对显式指数代码做指数映射，避免裸 000001 被误判成上证指数
+            symbol = _to_legacy_realtime_symbol(stock_code)
 
             # 调用旧版实时接口 (ts.get_realtime_quotes)
             df = ts.get_realtime_quotes(symbol)

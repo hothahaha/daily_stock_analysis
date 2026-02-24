@@ -1439,10 +1439,15 @@ class GeminiAnalyzer:
         realtime = context.get('realtime', {}) or {}
         yesterday = context.get('yesterday', {}) or {}
 
-        prev_close = yesterday.get('close')
-        close = today.get('close')
-        high = today.get('high')
-        low = today.get('low')
+        # 日线通常是最近一个已收盘交易日；若有实时行情，优先用实时字段覆盖展示口径
+        prev_close = realtime.get('pre_close', yesterday.get('close'))
+        close = realtime.get('price', today.get('close'))
+        high = realtime.get('high', today.get('high'))
+        low = realtime.get('low', today.get('low'))
+        open_price = realtime.get('open_price', today.get('open'))
+        pct_chg = realtime.get('change_pct', today.get('pct_chg'))
+        volume = realtime.get('volume', today.get('volume'))
+        amount = realtime.get('amount', today.get('amount'))
 
         amplitude = None
         change_amount = None
@@ -1457,18 +1462,24 @@ class GeminiAnalyzer:
             except (TypeError, ValueError):
                 change_amount = None
 
+        # 若实时源直接提供涨跌额/振幅，则优先使用其口径
+        if realtime.get('change_amount') is not None:
+            change_amount = realtime.get('change_amount')
+        if realtime.get('amplitude') is not None:
+            amplitude = realtime.get('amplitude')
+
         snapshot = {
             "date": context.get('date', '未知'),
             "close": self._format_price(close),
-            "open": self._format_price(today.get('open')),
+            "open": self._format_price(open_price),
             "high": self._format_price(high),
             "low": self._format_price(low),
             "prev_close": self._format_price(prev_close),
-            "pct_chg": self._format_percent(today.get('pct_chg')),
+            "pct_chg": self._format_percent(pct_chg),
             "change_amount": self._format_price(change_amount),
             "amplitude": self._format_percent(amplitude),
-            "volume": self._format_volume(today.get('volume')),
-            "amount": self._format_amount(today.get('amount')),
+            "volume": self._format_volume(volume),
+            "amount": self._format_amount(amount),
         }
 
         if realtime:
